@@ -1,0 +1,71 @@
+name: signal-desk
+x-backend: &backend
+  build:
+    context: .
+    args:
+      INSTALL_SEMANTIC: ${INSTALL_SEMANTIC:-0}
+  restart: unless-stopped
+  environment: &backend-env
+    DATABASE_URL: postgresql://integrity:container-local@db/integrity
+    INTEGRITY_MODE: ${INTEGRITY_MODE:-fixture}
+    INTEGRITY_REVIEWERS: ${INTEGRITY_REVIEWERS:?Set per-reviewer tokens in .env}
+    ALLOW_TOPIC_STREAM: ${ALLOW_TOPIC_STREAM:-0}
+    SEMANTIC_MODEL: ${SEMANTIC_MODEL:-}
+    EVALUATION_REVIEWERS: ${EVALUATION_REVIEWERS:-}
+  depends_on:
+    db:
+      condition: service_healthy
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: integrity
+      POSTGRES_PASSWORD: container-local
+      POSTGRES_DB: integrity
+    volumes:
+      - integrity-db:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U integrity -d integrity]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  api:
+    <<: *backend
+    command: ["sh", "-c", "python -m integrity migrate && exec uvicorn integrity.api:app --host 0.0.0.0 --port 8000 --no-proxy-headers"]
+    volumes:
+      - ./artifacts:/app/artifacts:ro
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  analyzer:
+    <<: *backend
+    environment:
+      <<: *backend-env
+      INTEGRITY_REVIEWERS: "{}"
+      EVALUATION_REVIEWERS: ""
+    command: ["python", "-m", "integrity", "analyze"]
+    volumes:
+      - ./artifacts:/app/artifacts:ro
+  collector:
+    <<: *backend
+    profiles: [live]
+    environment:
+      <<: *backend-env
+      INTEGRITY_REVIEWERS: "{}"
+      EVALUATION_REVIEWERS: ""
+    command: ["python", "-m", "integrity", "collect"]
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  integrity-db:
